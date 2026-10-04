@@ -1,0 +1,13 @@
+{
+  "enabled": {
+    "description": "启用个人印象",
+    "type": "bool",
+    "default": false
+  },
+  "enabled_self_ids": {
+    "description": "启用的 bot ID",
+    "type": "text",
+    "default": "",
+    "hint": "只填写明确启用的 bot ID，多个用逗号分隔；留空时任何 bot 都不会启用。"
+  }
+}
