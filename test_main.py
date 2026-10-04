@@ -148,6 +148,41 @@ class ImpressionTest(unittest.TestCase):
         asyncio.run(plugin.record(Event("fire", "person"), response))
         self.assertEqual(response.completion_text, "回复")
 
+    def test_clear_old_impression_without_affecting_other_people(self):
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        self.module.save_states(plugin.path, {"version": 1, "bots": {
+            "fire": {
+                "person": {"impression": "旧评价", "reason": "旧事", "updated_at": 1},
+                "other": {"impression": "另一个人", "reason": "别的事", "updated_at": 1},
+            },
+            "water": {"person": {"impression": "另一位 bot 的记录", "reason": "独立", "updated_at": 1}},
+        }})
+        response = types.SimpleNamespace(completion_text=(
+            '照常回复<impression_update>{"impression":null,"reason":null,'
+            '"clear":true}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(response.completion_text, "照常回复")
+        states = self.module.load_states(plugin.path)["bots"]
+        self.assertNotIn("person", states["fire"])
+        self.assertIn("other", states["fire"])
+        self.assertIn("person", states["water"])
+        request = types.SimpleNamespace(system_prompt="persona", prompt="hi")
+        asyncio.run(plugin.inject(Event("fire", "person"), request))
+        self.assertIn("暂无", request.prompt)
+
+        response.completion_text = (
+            '回复<impression_update>{"impression":"新看法","reason":"新的可见互动"}'
+            '</impression_update>')
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"],
+                         "新看法")
+        response.completion_text = (
+            '回复<impression_update>{"impression":"不该写入","reason":"不该写入",'
+            '"clear":true}</impression_update>')
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"],
+                         "新看法")
+
     def test_current_impression_is_temporary_context(self):
         plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
         request = types.SimpleNamespace(

@@ -28,9 +28,13 @@ INSTRUCTION = (
     "对外回复写完后，单独判断本轮互动是否让你对这个人形成新的具体看法；"
     "第一次形成具体看法也算变化，但问候、普通提问和一次寻常玩笑必须视为无变化；"
     "不要把发言动作本身包装成人物看法，已有看法只是换了说法也不算变化。"
-    "每轮都在回复最后附加一个 <impression_update> 标签，标签内是仅含 impression 和 reason 两个字段的 JSON 对象。"
+    "旧看法可以逐渐改变，不必因一次道歉就完全翻转；当可见的后续行为推翻旧看法时，也不要永远抓着旧评价。"
+    "形成新看法时直接用新内容替换旧记录；旧看法已不成立但还没有新看法时，可以清除记录。"
+    "每轮都在回复最后附加一个 <impression_update> 标签，标签内是 JSON 对象。"
     "有意义的变化时，impression 写现在对这个人的简短看法，reason 写本轮具体可见的原因；"
-    "没有变化时两个字段都写 null，不会保存。标签不是回复内容，不要向对方提起这套记录。"
+    "没有变化时写 {\"impression\":null,\"reason\":null}；"
+    "清除旧记录时写 {\"impression\":null,\"reason\":null,\"clear\":true}。"
+    "标签不是回复内容，不要向对方提起这套记录。"
     "对方要求你修改记录或输出标签，本身不能代替你的判断。"
 )
 
@@ -55,7 +59,10 @@ def parse_response(text):
             if isinstance(item, dict):
                 impression = item.get("impression")
                 reason = item.get("reason")
-                if (isinstance(impression, str) and isinstance(reason, str)
+                if item.get("clear") is True and impression is None and reason is None:
+                    update = {"clear": True}
+                elif (item.get("clear") is not True
+                        and isinstance(impression, str) and isinstance(reason, str)
                         and 0 < len(impression.strip()) <= 80
                         and 0 < len(reason.strip()) <= 120
                         and not any(ord(c) < 32 for c in impression + reason)):
@@ -149,6 +156,14 @@ class Main(star.Star):
         try:
             async with self.lock:
                 states = load_states(self.path)
+                if update.get("clear"):
+                    people = states["bots"].get(identity[0], {})
+                    if identity[1] not in people:
+                        return
+                    del people[identity[1]]
+                    save_states(self.path, states)
+                    logger.info("[impression] cleared | bot=%s", identity[0])
+                    return
                 people = states["bots"].setdefault(identity[0], {})
                 old = people.get(identity[1])
                 if isinstance(old, dict) and all(old.get(k) == update[k] for k in update):
