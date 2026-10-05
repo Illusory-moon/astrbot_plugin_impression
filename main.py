@@ -151,7 +151,13 @@ class Main(star.Star):
         cleaned, update = parse_response(text)
         if cleaned != text:
             response.completion_text = cleaned
+        # 观测用：四种判定都留痕（none=没吐标签 / null=吐了但判无变化 / same=更新但与旧记录相同 / new=真变化）
         if not update:
+            hit = TAG.search(text)
+            kind = "null" if hit else "none"
+            logger.info("[impression] judged | bot=%s who=%s tag=%s clear=%d len=%d",
+                        identity[0], identity[1], kind,
+                        1 if (hit and '"clear"' in hit.group(0)) else 0, len(text))
             return
         try:
             async with self.lock:
@@ -167,10 +173,12 @@ class Main(star.Star):
                 people = states["bots"].setdefault(identity[0], {})
                 old = people.get(identity[1])
                 if isinstance(old, dict) and all(old.get(k) == update[k] for k in update):
+                    logger.info("[impression] judged | bot=%s who=%s tag=same",
+                                identity[0], identity[1])
                     return
                 people[identity[1]] = {**update, "updated_at": int(time.time())}
                 save_states(self.path, states)
-            logger.info("[impression] updated | bot=%s", identity[0])
+            logger.info("[impression] updated | bot=%s who=%s", identity[0], identity[1])
         except Exception as exc:
             logger.warning("[impression] update failed: %s", type(exc).__name__)
 
