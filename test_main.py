@@ -183,6 +183,35 @@ class ImpressionTest(unittest.TestCase):
         self.assertEqual(self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"],
                          "新看法")
 
+    def test_loose_tag_forms_are_stripped_and_parsed(self):
+        """她偶尔省掉外壳：末尾裸 JSON / impression: 两行 —— 都要删掉并认出来。"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        # ① 末尾裸 JSON
+        response = types.SimpleNamespace(completion_text=(
+            '回复~\n{"impression":"爱较真","reason":"这轮反复纠正同一个说法"}'))
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(response.completion_text, "回复~")
+        self.assertEqual(
+            self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"], "爱较真")
+        # ② 末尾 impression: / reason: 两行（线上真出现过这个形态）
+        response.completion_text = ('嗯，建：\n\nimpression: "爱熬夜"\nreason: "凌晨两点还在问配队"')
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(response.completion_text, "嗯，建：")
+        self.assertEqual(
+            self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"], "爱熬夜")
+        # ③ 只有 impression 没有 reason → 正文里删掉，但不采纳（不覆盖上一条）
+        response.completion_text = '回复\nimpression: "半条"'
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(response.completion_text, "回复")
+        self.assertEqual(
+            self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"], "爱熬夜")
+        # ④ 历史清洗同样认宽松形态
+        part = self.module.TextPart('回复\nimpression: "爱熬夜"\nreason: "凌晨两点还在问配队"')
+        run_context = types.SimpleNamespace(messages=[
+            types.SimpleNamespace(role="assistant", content=[part])])
+        asyncio.run(plugin.scrub_history(Event("fire", "person"), run_context, response))
+        self.assertEqual(part.text, "回复")
+
     def test_current_impression_is_temporary_context(self):
         plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
         request = types.SimpleNamespace(

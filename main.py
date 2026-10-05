@@ -18,6 +18,16 @@ except ImportError:
 
 TAG = re.compile(r"<impression_update>(.*?)</impression_update>", re.DOTALL)
 OPEN_TAG = "<impression_update>"
+# 宽松形态：实测她偶尔会省掉外壳 —— 末尾裸 JSON，或末尾一行 impression: / reason:。
+# 不认这两种，就会「更新丢掉 + 内心的判断原样漏进群和历史」。
+_BT = chr(96)   # 反引号（她偶尔把标签包在代码块里）
+_QUOTES = (chr(34), chr(39), chr(8220), chr(8221), chr(12300), chr(12301))
+LOOSE_JSON = re.compile(r"\{[^{}]*\"impression\"[^{}]*\}[ \t]*" + _BT + r"*[ \t]*$")
+LOOSE_LINES = re.compile(
+    r"(?:\n|^)[ \t]*(?:[-*][ \t]*)?(?:impression|印象)[ \t]*[:：][ \t]*(?P<imp>[^\n]+)"
+    r"(?:\n[ \t]*(?:[-*][ \t]*)?(?:reason|依据)[ \t]*[:：][ \t]*(?P<rea>[^\n]+))?"
+    r"[ \t]*" + _BT + r"*[ \t]*$"
+)
 INSTRUCTION = (
     "回复时自然参考你对当前发言者的个人印象，同时保持你自己的语气和判断。"
     "这份印象是主观看法，不能覆盖已知的身份、关系和事实。"
@@ -54,30 +64,66 @@ def target_ids(raw):
     return set(re.split(r"[\s,，;；]+", str(raw or "").strip())) - {""}
 
 
+def _unwrap(raw):
+    """去掉引号 / 反引号包裹，取出真正的值。"""
+    value = str(raw or "").strip().strip(_BT).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in _QUOTES:
+        value = value[1:-1].strip()
+    return value
+
+
+def _to_update(item):
+    """把解析出来的对象校验成可落盘的更新（不合法就 None）。"""
+    if not isinstance(item, dict):
+        return None
+    impression = item.get("impression")
+    reason = item.get("reason")
+    if item.get("clear") is True and impression is None and reason is None:
+        return {"clear": True}
+    if (item.get("clear") is not True
+            and isinstance(impression, str) and isinstance(reason, str)
+            and 0 < len(impression.strip()) <= 80
+            and 0 < len(reason.strip()) <= 120
+            and not any(ord(c) < 32 for c in impression + reason)):
+        return {"impression": impression.strip(), "reason": reason.strip()}
+    return None
+
+
 def parse_response(text):
-    """清理私有标签；仅末尾的有效标签能更新印象。"""
-    matches = list(TAG.finditer(text or ""))
+    """清理私有标签并解析她对当前发言者的判断。
+
+    三种形态都认：严格标签、**末尾裸 JSON**、**末尾 `impression:` / `reason:` 两行**。
+    认出来的形态一律从正文里删掉（只有校验通过的才形成 update）——
+    她省外壳时若不删，既丢更新，又会把内心的判断漏出去。
+    返回 (清理后的正文, update 或 None)。
+    """
+    text = text or ""
+    matches = list(TAG.finditer(text))
     final = matches[-1] if matches and not text[matches[-1].end():].strip() else None
-    cleaned = TAG.sub("", text or "")
+    cleaned = TAG.sub("", text)
     if OPEN_TAG in cleaned:
         cleaned = cleaned.split(OPEN_TAG, 1)[0]
     update = None
     if final and len(final.group(1)) <= 400:
         try:
-            item = json.loads(final.group(1))
-            if isinstance(item, dict):
-                impression = item.get("impression")
-                reason = item.get("reason")
-                if item.get("clear") is True and impression is None and reason is None:
-                    update = {"clear": True}
-                elif (item.get("clear") is not True
-                        and isinstance(impression, str) and isinstance(reason, str)
-                        and 0 < len(impression.strip()) <= 80
-                        and 0 < len(reason.strip()) <= 120
-                        and not any(ord(c) < 32 for c in impression + reason)):
-                    update = {"impression": impression.strip(), "reason": reason.strip()}
+            update = _to_update(json.loads(final.group(1)))
         except (ValueError, TypeError):
-            pass
+            update = None
+    if update is None:
+        tail = cleaned.rstrip()
+        hit = LOOSE_JSON.search(tail)
+        if hit:
+            try:
+                update = _to_update(json.loads(hit.group(0).strip().strip(_BT).strip()))
+            except (ValueError, TypeError):
+                update = None
+            cleaned = tail[:hit.start()].rstrip()
+        else:
+            hit = LOOSE_LINES.search(tail)
+            if hit:
+                update = _to_update({"impression": _unwrap(hit.group("imp")),
+                                     "reason": _unwrap(hit.group("rea"))})
+                cleaned = tail[:hit.start()].rstrip()
     return cleaned.rstrip(), update
 
 
@@ -163,11 +209,15 @@ class Main(star.Star):
             response.completion_text = cleaned
         # 观测用：四种判定都留痕（none=没吐标签 / null=吐了但判无变化 / same=更新但与旧记录相同 / new=真变化）
         if not update:
-            hit = TAG.search(text)
-            kind = "null" if hit else "none"
+            if cleaned == text:
+                kind = "none"
+            elif TAG.search(text):
+                kind = "null"
+            else:
+                kind = "loose"      # 吐了但格式走样：已从正文删掉，只是没采纳
             logger.info("[impression] judged | bot=%s who=%s tag=%s clear=%d len=%d",
                         identity[0], identity[1], kind,
-                        1 if (hit and '"clear"' in hit.group(0)) else 0, len(text))
+                        1 if '"clear"' in (text or "") else 0, len(text))
             return
         try:
             async with self.lock:
@@ -188,7 +238,8 @@ class Main(star.Star):
                     return
                 people[identity[1]] = {**update, "updated_at": int(time.time())}
                 save_states(self.path, states)
-            logger.info("[impression] updated | bot=%s who=%s", identity[0], identity[1])
+            logger.info("[impression] updated | bot=%s who=%s loose=%d",
+                        identity[0], identity[1], 0 if TAG.search(text) else 1)
         except Exception as exc:
             logger.warning("[impression] update failed: %s", type(exc).__name__)
 
