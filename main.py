@@ -39,6 +39,15 @@ INSTRUCTION = (
 )
 
 
+# 贴身提醒：标签要求原先是埋在 1.5 万字 system_prompt 的最后，实测合规率是 0（judged tag=none）。
+# 这里把它挪到**本轮用户内容的最末尾**（离生成最近），格式与 INSTRUCTION 里的一致。
+TAIL = (
+    "（这一条的最后一行必须原样附上下面这个标签，别省略、别改格式；"
+    "值按你自己的判断填，本轮没有变化就照抄 null）"
+    "\n<impression_update>{\"impression\":null,\"reason\":null}</impression_update>"
+)
+
+
 def target_ids(raw):
     if isinstance(raw, (list, tuple)):
         return {str(x).strip() for x in raw if str(x).strip()}
@@ -129,6 +138,7 @@ class Main(star.Star):
                     item.get("impression", ""), item.get("reason", ""))
             else:
                 hint += "暂无；本轮有具体互动时可建立首条记录，照常回复"
+            hint += "\n\n" + TAIL
             request.system_prompt = (request.system_prompt or "") + "\n\n" + INSTRUCTION
             parts = getattr(request, "extra_user_content_parts", None)
             if TextPart is not None and parts is not None:
