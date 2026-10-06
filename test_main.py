@@ -68,10 +68,11 @@ def load_plugin(data_dir):
 
 
 class Event:
-    def __init__(self, bot, sender, cron=False):
+    def __init__(self, bot, sender, cron=False, text=""):
         self.bot = bot
         self.sender = sender
         self.cron = cron
+        self.message_str = text
 
     def get_self_id(self):
         return self.bot
@@ -129,6 +130,22 @@ class ImpressionTest(unittest.TestCase):
         asyncio.run(plugin.inject(Event("water", "person"), water_request))
         self.assertEqual(water_request.prompt, "hello")
         self.assertEqual(water_request.system_prompt, "persona")
+
+    def test_revision_hint_only_when_the_topic_is_records(self):
+        """对方提到「记录/记错」时加重提示（首次实测她口头答应却没改 ✗ 之后的补救 ✓）。"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        self.module.save_states(plugin.path, {"version": 1, "bots": {"fire": {
+            "100002": {"impression": "爱拆台的人", "reason": "老拿配置说事", "updated_at": 1},
+        }}})
+        plain = types.SimpleNamespace(system_prompt="persona", prompt="hello")
+        asyncio.run(plugin.inject(Event("fire", "person", text="晚上好呀"), plain))
+        self.assertNotIn("对方正在说", plain.prompt)      # 尾巴里本来就有「等于没改」，判据用定向那句 ✓
+        asked = types.SimpleNamespace(system_prompt="persona", prompt="hello")
+        asyncio.run(plugin.inject(
+            Event("fire", "person", text="你把他那条记录记错了，改一下"), asked))
+        self.assertIn("对方正在说", asked.prompt)
+        self.assertIn("100002", asked.prompt)          # 把可选对象列出来，省得她猜 who ✓
+        self.assertIn("爱拆台", asked.prompt)
 
     def test_named_revision_updates_the_named_person(self):
         """印象修订：标签里带 who 时改的是**别人**那条（私聊里更正事实错误用 ✓）。"""
@@ -209,6 +226,21 @@ class ImpressionTest(unittest.TestCase):
         asyncio.run(plugin.record(Event("fire", "person"), response))
         self.assertEqual(self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"],
                          "新看法")
+
+    def test_named_clear_targets_the_named_person(self):
+        """指名清除：clear 必须带 who，否则会去清**当前发言者**的条目 ✗（2026-10-06 修的 bug）。"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        self.module.save_states(plugin.path, {"version": 1, "bots": {"fire": {
+            "100002": {"impression": "爱拆台的人", "reason": "x", "updated_at": 1},
+            "100009": {"impression": "说话的人", "reason": "y", "updated_at": 1},
+        }}})
+        response = types.SimpleNamespace(completion_text=(
+            '好\n<impression_update>{"who":"100002","clear":"true",'
+            '"impression":"null","reason":null}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "100009"), response))
+        st = self.module.load_states(plugin.path)["bots"]["fire"]
+        self.assertNotIn("100002", st)      # 被指名的那条清了 ✓
+        self.assertIn("100009", st)         # 当前发言者**不许**被误清 ✓
 
     def test_loose_tag_forms_are_stripped_and_parsed(self):
         """她偶尔省掉外壳：末尾裸 JSON / impression: 两行 —— 都要删掉并认出来。"""

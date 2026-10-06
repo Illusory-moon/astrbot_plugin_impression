@@ -60,9 +60,30 @@ TAIL = (
     "（这一条的最后一行必须原样附上下面这个标签，别省略、别改格式；"
     "值按你自己的判断填，本轮没有变化就照抄 null）"
     "\n<impression_update>{\"impression\":null,\"reason\":null}</impression_update>"
-    "（若是被指出\"别人\"那条记录有事实错误，就带上 who："
-    "{\"who\":\"QQ号或称呼\",\"impression\":\"…\",\"reason\":\"事实依据\"}）"
+    "\n要改的是**别人**那条记录时（不是当前跟你说话的人），把 who 写上："
+    "{\"who\":\"…\",\"impression\":\"…\",\"reason\":\"事实依据\"} —— "
+    "**光写 null 只表示\"本轮没有变化\"，谁也改不到，等于没改。**）"
 )
+
+
+# 对方在说「记录」这件事时（私聊里更正别人那条的典型场景），把提示加重 ——
+# 首次实测（2026-10-06 22:51）：她口头答应了，但标签仍写 null ⇒ 条目没改 ✗。
+REVISION_WORDS = re.compile(r"印象|记录|记错|记串|写错|更正|纠错|改一下|那条|改改")
+
+
+def revision_hint(people, max_people=8):
+    """「要改别人那条」的定向提示 —— 把可选对象列出来，省得她猜 who。"""
+    names = []
+    for key, val in list((people or {}).items())[:max_people]:
+        if not isinstance(val, dict):
+            continue
+        label = str(val.get("name") or val.get("impression") or "")[:12]
+        names.append("%s（%s）" % (key, label) if label else str(key))
+    tip = ("\n\n⚠️ 对方正在说「记录」这件事：**如果写错的那条不是当前发言者的**，"
+           "改的时候一定要带 who** —— 光写 null 等于没改，谁也改不到。")
+    if names:
+        tip += "你记录里的人有：" + "、".join(names) + "。"
+    return tip
 
 
 def target_ids(raw):
@@ -107,18 +128,29 @@ def _to_update(item):
     impression = item.get("impression")
     reason = item.get("reason")
     who = item.get("who") or item.get("qq") or item.get("target")
-    if item.get("clear") is True and impression is None and reason is None:
-        return {"clear": True}
-    if (item.get("clear") is not True
+    # 「空值」的各种写法都要认：JSON null ✓ / 字符串 "null" ✓ / 空串 ✓
+    blank = lambda v: v is None or (isinstance(v, str) and v.strip().strip(_BT).strip().lower() in ("", "null", "none"))
+    # clear 也要认宽松写法（"true" / "1" / "yes"）—— 实测 2026-10-06 她写的就是带引号的 ✓
+    want_clear = str(item.get("clear")).strip().lower() in ("true", "1", "yes", "是")
+    who_txt = _unwrap(who)
+    if who_txt.lower() in ("null", "none", "self", "me", "我", "自己"):
+        who_txt = ""
+    if want_clear and blank(impression) and blank(reason):
+        out = {"clear": True}
+        if who_txt:
+            out["who"] = who_txt          # ⚠️ 必须把 who 带上：漏了就会去清当前发言者的条目 ✗
+        return out
+    if (item.get("clear") is not True and not want_clear
             and isinstance(impression, str) and isinstance(reason, str)
             and 0 < len(impression.strip()) <= 80
             and 0 < len(reason.strip()) <= 120
             and not any(ord(c) < 32 for c in impression + reason)):
         out = {"impression": impression.strip(), "reason": reason.strip()}
-        w = _unwrap(who)
-        if w and w.lower() not in ("null", "none", "self", "me", "我", "自己"):
-            out["who"] = w
+        if who_txt:
+            out["who"] = who_txt
         return out
+    # clear 与正文同时出现 = 自相矛盾 → 整包拒收 ✓（这条是刻意保留的防线，别改 ✗）
+    # 被拒时 record() 会把原文记一行 `tag-rejected raw=` ✓ 便于查她到底写了什么。
     return None
 
 
@@ -218,6 +250,13 @@ class Main(star.Star):
             else:
                 hint += "暂无；本轮有具体互动时可建立首条记录，照常回复"
             hint += "\n\n" + TAIL
+            # 定向加重：本轮对方的话里提到「记录/印象/记错」→ 补一条更硬的提示 ✓
+            try:
+                said = str(getattr(event, "message_str", "") or "")
+            except Exception:
+                said = ""
+            if said and REVISION_WORDS.search(said):
+                hint += revision_hint(states["bots"].get(identity[0], {}))
             request.system_prompt = (request.system_prompt or "") + "\n\n" + INSTRUCTION
             parts = getattr(request, "extra_user_content_parts", None)
             if TextPart is not None and parts is not None:
@@ -251,6 +290,9 @@ class Main(star.Star):
             logger.info("[impression] judged | bot=%s who=%s tag=%s clear=%d len=%d",
                         identity[0], identity[1], kind,
                         1 if '"clear"' in (text or "") else 0, len(text))
+            if kind == "null":
+                # 认了标签但没采纳（校验没过）—— 把她写的原文留一截，便于排查 ✓
+                logger.info("[impression] tag-rejected raw=%s", (text or "")[-200:])
             return
         try:
             async with self.lock:
