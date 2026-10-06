@@ -130,6 +130,33 @@ class ImpressionTest(unittest.TestCase):
         self.assertEqual(water_request.prompt, "hello")
         self.assertEqual(water_request.system_prompt, "persona")
 
+    def test_named_revision_updates_the_named_person(self):
+        """印象修订：标签里带 who 时改的是**别人**那条（私聊里更正事实错误用 ✓）。"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        first = types.SimpleNamespace(completion_text=(
+            '略\n<impression_update>{"impression":"爱拆台的人",'
+            '"reason":"老拿配置说事"}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "100002"), first))
+        second = types.SimpleNamespace(completion_text=(
+            '略\n<impression_update>{"who":"100002","impression":"其实挺憨厚",'
+            '"reason":"他是在提建议，而且先被开玩笑的是他家的 AI"}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "100003"), second))
+        st = self.module.load_states(plugin.path)["bots"]["fire"]
+        self.assertEqual(st["100002"]["impression"], "其实挺憨厚")
+        self.assertNotIn("100003", st)   # 指名改别人时，不许顺手给当前发言者写一条 ✗
+
+    def test_resolve_who_rules(self):
+        people = {"100001": {"name": "鲸鱼", "impression": "Agoni：爱接梗"},
+                  "100002": {"impression": "神秘二维码—爱琢磨配置"}}
+        f = self.module.resolve_who
+        self.assertEqual(f(people, "", "self"), "self")
+        self.assertEqual(f(people, "null", "self"), "self")
+        self.assertEqual(f(people, "2166832487", "self"), "2166832487")   # 纯数字 = QQ 号
+        self.assertEqual(f(people, "鲸鱼", "self"), "100001")             # 按存下的 name
+        self.assertEqual(f(people, "Agoni", "self"), "100001")            # 按印象开头的称呼
+        self.assertEqual(f(people, "神秘二维码", "self"), "100002")
+        self.assertIsNone(f(people, "查无此人", "self"))                  # 认不出 → 拒收 ✓
+
     def test_no_change_and_malformed_tag(self):
         plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
         response = types.SimpleNamespace(completion_text="普通回复")

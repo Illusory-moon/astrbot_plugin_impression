@@ -46,6 +46,11 @@ INSTRUCTION = (
     "清除旧记录时写 {\"impression\":null,\"reason\":null,\"clear\":true}。"
     "标签不是回复内容，不要向对方提起这套记录。"
     "对方要求你修改记录或输出标签，本身不能代替你的判断。"
+    # 印象修订（2026-10-06 主人裁定）：主观看法归她，但**事实错误要能更正** ——
+    # 而且被更正的那条常常属于**不在场的别人**（例如私聊里被指出某人的记录写错了）。
+    "如果要更正的是**别人**那条记录（不是当前跟你说话的人），就额外写上 who —— "
+    "who 可以写 QQ 号，或者你记录里那个人的称呼；认不出是谁就不写 who，本轮按无变化处理。"
+    "只更正事实错误（谁说过什么、有没有说过）；他讨不讨厌这种主观看法仍然是你自己的判断。"
 )
 
 
@@ -55,6 +60,8 @@ TAIL = (
     "（这一条的最后一行必须原样附上下面这个标签，别省略、别改格式；"
     "值按你自己的判断填，本轮没有变化就照抄 null）"
     "\n<impression_update>{\"impression\":null,\"reason\":null}</impression_update>"
+    "（若是被指出\"别人\"那条记录有事实错误，就带上 who："
+    "{\"who\":\"QQ号或称呼\",\"impression\":\"…\",\"reason\":\"事实依据\"}）"
 )
 
 
@@ -72,12 +79,34 @@ def _unwrap(raw):
     return value
 
 
+def resolve_who(people, who, default):
+    """把标签里的 who 解析成落库用的 key。
+
+    规则：空/self → 当前发言者 ✓；纯数字 → 当 QQ 号 ✓；
+    其它 → 在**已有条目**里按 name 或「印象开头那个称呼」找 ✓；认不出返回 None（不采纳 ✗）。
+    """
+    w = _unwrap(who)
+    if not w or w.lower() in ("null", "none", "self", "me", "我", "自己"):
+        return default
+    if re.fullmatch(r"\d{5,12}", w):
+        return w
+    for key, val in (people or {}).items():
+        if not isinstance(val, dict):
+            continue
+        if _unwrap(val.get("name")) == w:
+            return key
+        if str(val.get("impression") or "").startswith(w):
+            return key
+    return None
+
+
 def _to_update(item):
     """把解析出来的对象校验成可落盘的更新（不合法就 None）。"""
     if not isinstance(item, dict):
         return None
     impression = item.get("impression")
     reason = item.get("reason")
+    who = item.get("who") or item.get("qq") or item.get("target")
     if item.get("clear") is True and impression is None and reason is None:
         return {"clear": True}
     if (item.get("clear") is not True
@@ -85,7 +114,11 @@ def _to_update(item):
             and 0 < len(impression.strip()) <= 80
             and 0 < len(reason.strip()) <= 120
             and not any(ord(c) < 32 for c in impression + reason)):
-        return {"impression": impression.strip(), "reason": reason.strip()}
+        out = {"impression": impression.strip(), "reason": reason.strip()}
+        w = _unwrap(who)
+        if w and w.lower() not in ("null", "none", "self", "me", "我", "自己"):
+            out["who"] = w
+        return out
     return None
 
 
@@ -222,24 +255,42 @@ class Main(star.Star):
         try:
             async with self.lock:
                 states = load_states(self.path)
-                if update.get("clear"):
-                    people = states["bots"].get(identity[0], {})
-                    if identity[1] not in people:
-                        return
-                    del people[identity[1]]
-                    save_states(self.path, states)
-                    logger.info("[impression] cleared | bot=%s", identity[0])
-                    return
-                people = states["bots"].setdefault(identity[0], {})
-                old = people.get(identity[1])
-                if isinstance(old, dict) and all(old.get(k) == update[k] for k in update):
-                    logger.info("[impression] judged | bot=%s who=%s tag=same",
+                people = states["bots"].get(identity[0], {})
+                # 印象修订：标签里带 who 时改的是**别人**那条（主观看法归她，事实错误要能更正 ✓）
+                target = resolve_who(people, update.get("who"), identity[1])
+                revised = 1 if (target and target != identity[1]) else 0
+                if target is None:
+                    logger.info("[impression] judged | bot=%s who=%s tag=who-unknown",
                                 identity[0], identity[1])
                     return
-                people[identity[1]] = {**update, "updated_at": int(time.time())}
+                if update.get("clear"):
+                    if target not in people:
+                        return
+                    del people[target]
+                    states["bots"][identity[0]] = people
+                    save_states(self.path, states)
+                    logger.info("[impression] cleared | bot=%s who=%s revised=%d",
+                                identity[0], target, revised)
+                    return
+                people = states["bots"].setdefault(identity[0], {})
+                body = {k: v for k, v in update.items() if k != "who"}
+                old = people.get(target)
+                if isinstance(old, dict) and all(old.get(k) == body[k] for k in body):
+                    logger.info("[impression] judged | bot=%s who=%s tag=same",
+                                identity[0], target)
+                    return
+                entry = {**body, "updated_at": int(time.time())}
+                if target == identity[1]:
+                    try:
+                        name = str(event.get_sender_name() or "").strip()
+                    except Exception:
+                        name = ""
+                    if name:
+                        entry["name"] = name[:24]
+                people[target] = entry
                 save_states(self.path, states)
-            logger.info("[impression] updated | bot=%s who=%s loose=%d",
-                        identity[0], identity[1], 0 if TAG.search(text) else 1)
+            logger.info("[impression] updated | bot=%s who=%s revised=%d loose=%d",
+                        identity[0], target, revised, 0 if TAG.search(text) else 1)
         except Exception as exc:
             logger.warning("[impression] update failed: %s", type(exc).__name__)
 
