@@ -169,9 +169,28 @@ def _to_update(item):
         if who_txt:
             out["who"] = who_txt
         return out
-    # clear 与正文同时出现 = 自相矛盾 → 整包拒收 ✓（这条是刻意保留的防线，别改 ✗）
-    # 被拒时 record() 会把原文记一行 `tag-rejected raw=` ✓ 便于查她到底写了什么。
+    # clear 与正文同时出现：**以正文为准** ✓（2026-10-06 改的）——
+    # 原先刻意拒收（当"自相矛盾"），但她实测就是这么写的 ✗，而且她想说的话不能丢 ✓；
+    # 最坏后果也只是用她自己的新文本替换旧记录 ✓ 无害。
+    if want_clear and isinstance(impression, str) and isinstance(reason, str) \
+            and 0 < len(impression.strip()) <= 80 and 0 < len(reason.strip()) <= 120 \
+            and not any(ord(c) < 32 for c in impression + reason):
+        out = {"impression": impression.strip(), "reason": reason.strip()}
+        if who_txt:
+            out["who"] = who_txt
+        return out
     return None
+
+
+def tag_dump(text, limit=1200):
+    """把标签体解析成 JSON 打出来（只为**排查**用 ✓）—— 2026-10-06 因为只留了 200 字符，
+    她第三次提交的原文前半截永久丢失 ✗，所以这里既留原文也留解析后的对象 ✓。"""
+    got = TAG.search(text or "")
+    body = (got.group(1).strip() if got else (text or "")).strip()[:limit]
+    try:
+        return body, json.loads(body)
+    except Exception:
+        return body, None
 
 
 def parse_response(text):
@@ -311,8 +330,11 @@ class Main(star.Star):
                         identity[0], identity[1], kind,
                         1 if '"clear"' in (text or "") else 0, len(text))
             if kind == "null":
-                # 认了标签但没采纳（校验没过）—— 把她写的原文留一截，便于排查 ✓
-                logger.info("[impression] tag-rejected raw=%s", (text or "")[-200:])
+                # 认了标签但没采纳（校验没过）—— 原文 + 解析后的对象都留全 ✓
+                body, obj = tag_dump(text)
+                logger.info("[impression] tag-rejected obj=%s raw=%s",
+                            json.dumps(obj, ensure_ascii=False) if obj is not None else "(非 JSON)",
+                            body)
             return
         try:
             async with self.lock:
@@ -335,6 +357,8 @@ class Main(star.Star):
                     save_states(self.path, states)
                     logger.info("[impression] cleared | bot=%s who=%s revised=%d",
                                 identity[0], ",".join(removed), revised)
+                    body, _ = tag_dump(text)
+                    logger.info("[impression] tag-accepted raw=%s", body)
                     return
                 if len(targets) > 1:
                     # 一份看法没法同时写给两个人 ✗（带 where 的多目标只对 clear 有意义）
@@ -361,6 +385,9 @@ class Main(star.Star):
                 save_states(self.path, states)
             logger.info("[impression] updated | bot=%s who=%s revised=%d loose=%d",
                         identity[0], target, revised, 0 if TAG.search(text) else 1)
+            # 通过的也留一份原文 ✓ —— 「不做不属于她的东西」得配上「她说过的原文可查」✓
+            body, _ = tag_dump(text)
+            logger.info("[impression] tag-accepted raw=%s", body)
         except Exception as exc:
             logger.warning("[impression] update failed: %s", type(exc).__name__)
 

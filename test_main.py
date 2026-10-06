@@ -220,12 +220,14 @@ class ImpressionTest(unittest.TestCase):
         asyncio.run(plugin.record(Event("fire", "person"), response))
         self.assertEqual(self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"],
                          "新看法")
+        # clear 与正文同时出现：改成**以正文为准** ✓（她实测就这么写 ✗；
+        # 原先拒收会让她的更新白白丢掉 —— 2026-10-06 改）
         response.completion_text = (
-            '回复<impression_update>{"impression":"不该写入","reason":"不该写入",'
+            '回复<impression_update>{"impression":"改后的看法","reason":"新的事实",'
             '"clear":true}</impression_update>')
         asyncio.run(plugin.record(Event("fire", "person"), response))
         self.assertEqual(self.module.load_states(plugin.path)["bots"]["fire"]["person"]["impression"],
-                         "新看法")
+                         "改后的看法")
 
     def test_named_clear_targets_the_named_person(self):
         """指名清除：clear 必须带 who，否则会去清**当前发言者**的条目 ✗（2026-10-06 修的 bug）。"""
