@@ -71,8 +71,24 @@ TAIL = (
 REVISION_WORDS = re.compile(r"印象|记录|记错|记串|写错|更正|纠错|改一下|那条|改改")
 
 
-def revision_hint(people, max_people=8):
-    """「要改别人那条」的定向提示 —— 把可选对象列出来，省得她猜 who。"""
+def revision_hint(people, max_people=8, focus=None):
+    """「要改别人那条」的定向提示。
+
+    focus：这条消息里**点到名的人**（号或称呼）—— 有的话就把他那条**原文**摆出来，
+    否则她根本看不见别人那条（插件只注入当前发言者 ✓）。
+    实测 2026-10-06 23:09：主人让她改两条记录，她答「这两个号压根没在上面呀」✓
+    —— 她说得没错 ✗ 是我们没把她自己的记录给她看 ✓。
+    """
+    focus = list(focus or [])
+    if focus:
+        lines = ["\n\n⚠️ 对方说到的这几个人，你记录里是这么写的："]
+        for key in focus[:max_people]:
+            val = people.get(key) or {}
+            lines.append("- %s：%s（当初的依据：%s）" % (
+                key, val.get("impression", ""), val.get("reason", "")))
+        lines.append("要改就带上 who（写 %s 这样的号，或者你记录里的称呼）—— "
+                     "只写 null 等于没改。只更正事实，怎么看他仍然是你自己的判断。" % focus[0])
+        return "".join(lines)
     names = []
     for key, val in list((people or {}).items())[:max_people]:
         if not isinstance(val, dict):
@@ -294,8 +310,17 @@ class Main(star.Star):
                 said = str(getattr(event, "message_str", "") or "")
             except Exception:
                 said = ""
-            if said and REVISION_WORDS.search(said):
-                hint += revision_hint(states["bots"].get(identity[0], {}))
+            people = states["bots"].get(identity[0], {})
+            # 消息里点到的人：号本身出现 ✓ 或她记录里的称呼出现 ✓（称呼取 name 和印象开头）
+            focus = []
+            for key, val in people.items():
+                if not isinstance(val, dict) or key in focus:
+                    continue
+                label = str(val.get("name") or str(val.get("impression") or "").split("：")[0])[:12]
+                if (key and key in said) or (label and len(label) >= 2 and label in said):
+                    focus.append(key)
+            if said and (REVISION_WORDS.search(said) or focus):
+                hint += revision_hint(people, focus=focus)
             request.system_prompt = (request.system_prompt or "") + "\n\n" + INSTRUCTION
             parts = getattr(request, "extra_user_content_parts", None)
             if TextPart is not None and parts is not None:

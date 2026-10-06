@@ -146,6 +146,13 @@ class ImpressionTest(unittest.TestCase):
         self.assertIn("对方正在说", asked.prompt)
         self.assertIn("100002", asked.prompt)          # 把可选对象列出来，省得她猜 who ✓
         self.assertIn("爱拆台", asked.prompt)
+        # 只提号码、没有「记录」字样 → 也要把那条摆出来 ✓（她看不见别人那条 ✓ 23:09 实测）
+        focused = types.SimpleNamespace(system_prompt="persona", prompt="hello")
+        asyncio.run(plugin.inject(
+            Event("fire", "person", text="100002 那条你看着办"), focused))
+        self.assertIn("你记录里是这么写的", focused.prompt)
+        self.assertIn("爱拆台", focused.prompt)
+        self.assertIn("当初的依据", focused.prompt)
 
     def test_named_revision_updates_the_named_person(self):
         """印象修订：标签里带 who 时改的是**别人**那条（私聊里更正事实错误用 ✓）。"""
