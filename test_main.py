@@ -242,6 +242,23 @@ class ImpressionTest(unittest.TestCase):
         self.assertNotIn("100002", st)      # 被指名的那条清了 ✓
         self.assertIn("100009", st)         # 当前发言者**不许**被误清 ✓
 
+    def test_clear_accepts_multiple_ids_and_a_reason(self):
+        """她实测的写法：who 里塞两个号 + clear + 带 reason 说明原因 ✓ 必须收下。"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        self.module.save_states(plugin.path, {"version": 1, "bots": {"fire": {
+            "100002": {"impression": "a", "reason": "x", "updated_at": 1},
+            "100003": {"impression": "b", "reason": "y", "updated_at": 1},
+            "100009": {"impression": "当前发言者", "reason": "z", "updated_at": 1},
+        }}})
+        response = types.SimpleNamespace(completion_text=(
+            '好\n<impression_update>{"who":"100002,100003","clear":true,'
+            '"impression":null,"reason":"水梦当场更正事实，那两笔不成立了"}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "100009"), response))
+        st = self.module.load_states(plugin.path)["bots"]["fire"]
+        self.assertNotIn("100002", st)
+        self.assertNotIn("100003", st)
+        self.assertIn("100009", st)          # 当前发言者仍不许被误清 ✓
+
     def test_loose_tag_forms_are_stripped_and_parsed(self):
         """她偶尔省掉外壳：末尾裸 JSON / impression: 两行 —— 都要删掉并认出来。"""
         plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})

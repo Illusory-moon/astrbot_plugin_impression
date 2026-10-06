@@ -121,6 +121,24 @@ def resolve_who(people, who, default):
     return None
 
 
+def resolve_who_all(people, who, default, max_n=6):
+    """who 可能是**一串**（她实测会写成「1476399249,1219526704」✗）→ 拆开逐个解析 ✓。"""
+    raw = _unwrap(who)
+    if not raw:
+        return [default]
+    out = []
+    for part in re.split(r"[,，、;；\s]+", raw):
+        part = _unwrap(part)
+        if not part:
+            continue
+        got = resolve_who(people, part, None)
+        if got and got not in out:
+            out.append(got)
+        if len(out) >= max_n:
+            break
+    return out
+
+
 def _to_update(item):
     """把解析出来的对象校验成可落盘的更新（不合法就 None）。"""
     if not isinstance(item, dict):
@@ -135,7 +153,9 @@ def _to_update(item):
     who_txt = _unwrap(who)
     if who_txt.lower() in ("null", "none", "self", "me", "我", "自己"):
         who_txt = ""
-    if want_clear and blank(impression) and blank(reason):
+    # clear 的判据只看 impression（她清了却顺手写个 reason 说明原因，是合理的 ✓ ——
+    # 实测 2026-10-06 23:00 她就是这么写的 ✗ 原来要求 reason 也空 → 整包被拒）
+    if want_clear and blank(impression):
         out = {"clear": True}
         if who_txt:
             out["who"] = who_txt          # ⚠️ 必须把 who 带上：漏了就会去清当前发言者的条目 ✗
@@ -299,21 +319,29 @@ class Main(star.Star):
                 states = load_states(self.path)
                 people = states["bots"].get(identity[0], {})
                 # 印象修订：标签里带 who 时改的是**别人**那条（主观看法归她，事实错误要能更正 ✓）
-                target = resolve_who(people, update.get("who"), identity[1])
-                revised = 1 if (target and target != identity[1]) else 0
-                if target is None:
+                targets = resolve_who_all(people, update.get("who"), identity[1])
+                revised = 1 if any(t != identity[1] for t in targets) else 0
+                if not targets:
                     logger.info("[impression] judged | bot=%s who=%s tag=who-unknown",
                                 identity[0], identity[1])
                     return
                 if update.get("clear"):
-                    if target not in people:
+                    removed = [t for t in targets if t in people]
+                    if not removed:
                         return
-                    del people[target]
+                    for t in removed:
+                        del people[t]
                     states["bots"][identity[0]] = people
                     save_states(self.path, states)
                     logger.info("[impression] cleared | bot=%s who=%s revised=%d",
-                                identity[0], target, revised)
+                                identity[0], ",".join(removed), revised)
                     return
+                if len(targets) > 1:
+                    # 一份看法没法同时写给两个人 ✗（带 where 的多目标只对 clear 有意义）
+                    logger.info("[impression] judged | bot=%s who=%s tag=who-many",
+                                identity[0], identity[1])
+                    return
+                target = targets[0]
                 people = states["bots"].setdefault(identity[0], {})
                 body = {k: v for k, v in update.items() if k != "who"}
                 old = people.get(target)
