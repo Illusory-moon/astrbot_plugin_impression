@@ -374,6 +374,13 @@ class Main(star.Star):
             if kind == "null":
                 # 认了标签但没采纳（校验没过）—— 原文 + 解析后的对象都留全 ✓
                 body, obj = tag_dump(text)
+                # ⚠️ 2026-10-07 修：正常的 `{"impression":null}`（本轮无变化 ✓）**不是被拒** ✗ ——
+                #    原先每轮都喊一句 tag-rejected ✗（狼来了 ✓）。只有「看着像想更新」的包才值得留原文 ✓。
+                _attempt = isinstance(obj, dict) and bool(
+                    obj.get("who") or obj.get("clear") is not None
+                    or (obj.get("impression") not in (None, "null")))
+                if not _attempt:
+                    return
                 logger.info("[impression] tag-rejected obj=%s raw=%s",
                             json.dumps(obj, ensure_ascii=False) if obj is not None else "(非 JSON)",
                             body)
