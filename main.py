@@ -23,6 +23,14 @@ OPEN_TAG = "<impression_update>"
 _BT = chr(96)   # 反引号（她偶尔把标签包在代码块里）
 _QUOTES = (chr(34), chr(39), chr(8220), chr(8221), chr(12300), chr(12301))
 LOOSE_JSON = re.compile(r"\{[^{}]*\"impression\"[^{}]*\}[ \t]*" + _BT + r"*[ \t]*$")
+# 2026-10-13 P0：她还爱把标签写成**双中括号**，而且**后面还接着别的话**（真机实测 ✗）。
+# 于是分两条：`FULL` 认完整闭合的（能顺手把里面的 JSON 叼出来）；
+#            `OPEN` 认"只剩开标签"的（只扒标签，后面的话不许动 ✓）。
+_OPEN = r"(?:\[\[impression_update\]\]|\[impression_update\]|<impression_update>)"
+_CLOSE = r"(?:\[\[/impression_update\]\]|\[/impression_update\]|</impression_update>)"
+BRACKET_FULL = re.compile(_OPEN + r"[ \t]*" + _BT + r"*[ \t]*(?P<payload>\{[^{}]*\})?[ \t]*"
+                          + _BT + r"*[ \t]*" + _CLOSE)
+BRACKET_OPEN = re.compile(_OPEN + r"[ \t]*" + _BT + r"*[ \t]*(?P<payload>\{[^{}]*\})?")
 LOOSE_LINES = re.compile(
     r"(?:\n|^)[ \t]*(?:[-*][ \t]*)?(?:impression|印象)[ \t]*[:：][ \t]*(?P<imp>[^\n]+)"
     r"(?:\n[ \t]*(?:[-*][ \t]*)?(?:reason|依据)[ \t]*[:：][ \t]*(?P<rea>[^\n]+))?"
@@ -229,19 +237,44 @@ def tag_dump(text, limit=1200):
 def parse_response(text):
     """清理私有标签并解析她对当前发言者的判断。
 
-    三种形态都认：严格标签、**末尾裸 JSON**、**末尾 `impression:` / `reason:` 两行**。
+    四种形态都认：严格标签、**方括号写法**、**末尾裸 JSON**、**末尾 `impression:` / `reason:` 两行**。
     认出来的形态一律从正文里删掉（只有校验通过的才形成 update）——
     她省外壳时若不删，既丢更新，又会把内心的判断漏出去。
-    返回 (清理后的正文, update 或 None)。
+
+    ⚠️ 2026-10-13 真事故（P0，标签漏进群 ✗）：她把标签写成
+    `[[impression_update]]{"impression":null,"reason":null}` 且**后面还有别的话 + 一张图** ——
+    老解析器只认 `<...>` 闭合标签、而且只认**末尾**那一处 ⇒ 两处都不匹配
+    ⇒ 标签连 JSON 一起原样发进了群（实测 23:21:01，群 1141885526）✗
+    ⇒ 修：**写法放宽**（`<...>` / `[[...]]` / `[OPEN]…[CLOSE]`）+ **位置放宽**（任何位置都扒掉）✓
     """
     text = text or ""
+    cleaned = TAG.sub("", text)
+    update = None
+    # ① 完整闭合的**方括号**写法：取出里面的 JSON（若有），整段扒掉 ✓
+    for match in BRACKET_FULL.finditer(cleaned):
+        raw = (match.group("payload") or "").strip().strip(_BT).strip()
+        if update is None and raw:
+            try:
+                update = _to_update(json.loads(raw))
+            except (ValueError, TypeError):
+                update = None
+        cleaned = cleaned.replace(match.group(0), "")
+    # ② 只剩**开标签**（没闭合）：只扒标签本身，**别动它后面的话** ✓
+    #    ⚠️ 老逻辑是 `cleaned.split(OPEN_TAG)[0]` —— 会把标签后的整段正文砍掉 ✗
+    #    （真机那次标签后面还有「，Wait — need format:」+ 图片）
+    update_tail = None
+    for match in BRACKET_OPEN.finditer(cleaned):
+        if update_tail is None and match.group("payload"):
+            update_tail = match.group("payload")
+        cleaned = cleaned.replace(match.group(0), "")
+    if update is None and update_tail:
+        try:
+            update = _to_update(json.loads(_unwrap(update_tail)))
+        except (ValueError, TypeError):
+            update = None
     matches = list(TAG.finditer(text))
     final = matches[-1] if matches and not text[matches[-1].end():].strip() else None
-    cleaned = TAG.sub("", text)
-    if OPEN_TAG in cleaned:
-        cleaned = cleaned.split(OPEN_TAG, 1)[0]
-    update = None
-    if final and len(final.group(1)) <= 400:
+    if update is None and final and len(final.group(1)) <= 400:
         try:
             update = _to_update(json.loads(final.group(1)))
         except (ValueError, TypeError):
