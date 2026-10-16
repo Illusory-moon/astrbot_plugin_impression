@@ -31,6 +31,15 @@ _CLOSE = r"(?:\[\[/impression_update\]\]|\[/impression_update\]|</impression_upd
 BRACKET_FULL = re.compile(_OPEN + r"[ \t]*" + _BT + r"*[ \t]*(?P<payload>\{[^{}]*\})?[ \t]*"
                           + _BT + r"*[ \t]*" + _CLOSE)
 BRACKET_OPEN = re.compile(_OPEN + r"[ \t]*" + _BT + r"*[ \t]*(?P<payload>\{[^{}]*\})?")
+# ⚠️ 2026-10-16 真事故（主人报「把 impression 的 json 漏出去了」✗）：
+#   她把**标签和 JSON 一起截断**了 —— 群里实际收到的是：
+#       `…真诚得没法驳回呀~<impression_update>{"impression`（截断）
+#       `…挂着呢嘛，<impression_update>{"impression":null,"r`（截断）
+#   而上面的 `BRACKET_FULL / BRACKET_OPEN` 都要求 JSON **是完整的 `{…}`** ✗
+#   ⇒ 标签被扒掉了，**残缺的 JSON 留在正文里** ✗（本鱼实测复现 ✓）
+#   ⇒ 补一条：**开标签之后跟着一个没闭合的 `{`** ⇒ 从该 `{` 起**一路到文本结尾**全扒 ✓
+#      （漏出形态必然在末尾 —— 因为那是被截断出来的 ✓；句中另有正常文字不影响 ✓）
+OPEN_TRUNC = re.compile(_OPEN + r"[ \t]*(?P<tail>\{[^{}]*$)")
 LOOSE_LINES = re.compile(
     r"(?:\n|^)[ \t]*(?:[-*][ \t]*)?(?:impression|印象)[ \t]*[:：][ \t]*(?P<imp>[^\n]+)"
     r"(?:\n[ \t]*(?:[-*][ \t]*)?(?:reason|依据)[ \t]*[:：][ \t]*(?P<rea>[^\n]+))?"
@@ -237,7 +246,8 @@ def tag_dump(text, limit=1200):
 def parse_response(text):
     """清理私有标签并解析她对当前发言者的判断。
 
-    四种形态都认：严格标签、**方括号写法**、**末尾裸 JSON**、**末尾 `impression:` / `reason:` 两行**。
+    五种形态都认：严格标签、**方括号写法**、**末尾裸 JSON**、**末尾 `impression:` / `reason:` 两行**、
+    **被截断的标签+JSON**（2026-10-16 主人报的那次 ✓）。
     认出来的形态一律从正文里删掉（只有校验通过的才形成 update）——
     她省外壳时若不删，既丢更新，又会把内心的判断漏出去。
 
@@ -262,6 +272,12 @@ def parse_response(text):
     # ② 只剩**开标签**（没闭合）：只扒标签本身，**别动它后面的话** ✓
     #    ⚠️ 老逻辑是 `cleaned.split(OPEN_TAG)[0]` —— 会把标签后的整段正文砍掉 ✗
     #    （真机那次标签后面还有「，Wait — need format:」+ 图片）
+    # ①.5 开标签 + **没闭合的 JSON**（截断形态）⇒ 连残片一起扒 ✓
+    #     顺序很关键：必须排在 BRACKET_OPEN 之前 ✗ ——
+    #     否则后者只吃掉标签、把残缺 JSON 留在正文里（真事故就是这么漏的 ✓）
+    for match in OPEN_TRUNC.finditer(cleaned):
+        cleaned = cleaned.replace(match.group(0), "")
+        break                      # 一次就够（形态必然在末尾 ✓）
     update_tail = None
     for match in BRACKET_OPEN.finditer(cleaned):
         if update_tail is None and match.group("payload"):

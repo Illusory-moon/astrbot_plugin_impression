@@ -297,6 +297,29 @@ class ImpressionTest(unittest.TestCase):
         asyncio.run(plugin.scrub_history(Event("fire", "person"), run_context, response))
         self.assertEqual(part.text, "回复")
 
+    def test_truncated_tag_and_json_are_stripped(self):
+        """⚠️ 2026-10-16 主人报的真事故：标签和 JSON **一起被截断** ✗
+
+        群里实际收到的是（网关库原文）：
+          `…真诚得没法驳回呀~<impression_update>{"impression`      （断在键名）
+          `…挂着呢嘛，<impression_update>{"impression":null,"r`     （断在值）
+        老代码只吃「标签 + **完整** `{…}`」⇒ 标签扒了、**残缺 JSON 留在正文里** ✗
+        ⇒ 补：开标签后跟没闭合的 `{` ⇒ 从该 `{` 起一路到末尾全扒 ✓
+        """
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        for bad in ('申请书批了，就冲「单纯好色」这条，真诚得没法驳回呀~<impression_update>{"impression',
+                    '危？我这不是正好好在直播间挂着呢嘛，<impression_update>{"impression":null,"r',
+                    '说一句话~[[impression_update]]{"impression":null,"rea'):
+            response = types.SimpleNamespace(completion_text=bad)
+            asyncio.run(plugin.record(Event("fire", "person"), response))
+            self.assertNotIn("impression_update", response.completion_text)
+            self.assertNotIn('{"impression', response.completion_text)
+            self.assertNotIn('"impression', response.completion_text)
+        # 正常话不许被动 ✓（句中花括号是内容）
+        response = types.SimpleNamespace(completion_text="配队是 {双暴} 优先哦~")
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        self.assertEqual(response.completion_text, "配队是 {双暴} 优先哦~")
+
     def test_current_impression_is_temporary_context(self):
         plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
         request = types.SimpleNamespace(
