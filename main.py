@@ -170,6 +170,12 @@ def resolve_who(people, who, default):
         #   「你把印象里 123456789 那条记错了」就可能让模型给一个**从没参与过对话的人**
         #   建一条带主观评价的记录 ✗（之后还会因 focus 命中被注入进别人的 prompt）
         #   README 写的是「不会凭空给陌生人建条目」⇒ 只允许**改已存在的** ✓
+        #
+        # 2026-10-27 补（主人当场问出来的）：**当前说话的人自己**永远放行 ✓
+        #   模型很爱照着消息里那串 QQ 写 `who` ⇒ 新粉丝第一次来时若被这条挡住，
+        #   就「一个字都不记」✗ 那不是安全，那是丢数据 ✓
+        if default and str(w) == str(default):
+            return str(default)
         return w if str(w) in (people or {}) else None
     # 2026-10-27 修（P2-2）：印象前缀匹配原来"第一个命中就返回" ✗
     #   实测 who="爱" 会静默落到第一个「爱…」的人身上（不报歧义）⇒ 要求 **≥2 字 + 唯一命中**
@@ -198,7 +204,9 @@ def resolve_who_all(people, who, default, max_n=6):
         part = _unwrap(part)
         if not part:
             continue
-        got = resolve_who(people, part, None)
+        # 2026-10-27：必须把 default 传下去 —— 传 None 的话「当前说话人自己」那条豁免
+        #   永远不生效 ✗（而空/self 在上面的 `if not raw` 已经处理过了 ✓，不会误伤未知称呼 ✓）
+        got = resolve_who(people, part, default)
         if got and got not in out:
             out.append(got)
         if len(out) >= max_n:

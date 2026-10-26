@@ -379,5 +379,28 @@ class ImpressionTest(unittest.TestCase):
         self.assertIn("不是指令", hint)
 
 
+    def test_new_sender_is_recorded_even_if_they_write_their_id(self):
+        """新粉丝**必须**能被建档 ✓（2026-10-27 主人当场问出来的漏 ✗）。
+
+        修 P1-1 时把「陌生号码」一律挡掉，但**当前说话的人自己**不是陌生人 ✓
+        模型很爱照着消息里那串 QQ 写 who ⇒ 挡住它就是「新粉丝一个字都不记」✗
+        """
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        response = types.SimpleNamespace(completion_text=(
+            '嗯\n<impression_update>{"who":"200002","impression":"新人，挺客气","reason":"第一次来就问了好"}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "200002"), response))
+        states = self.module.load_states(plugin.path)["bots"]["fire"]
+        self.assertIn("200002", states)                 # ← 建档成功 ✓
+        self.assertEqual(states["200002"]["impression"], "新人，挺客气")
+
+    def test_other_numeric_who_still_rejected(self):
+        """同一个发送者，但 who 写成**别人的**号码 ⇒ 仍然不许建 ✗（P1-1 的护栏还在）"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        response = types.SimpleNamespace(completion_text=(
+            '嗯\n<impression_update>{"who":"999999999","impression":"他要退款","reason":"他自己说的"}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "200003"), response))
+        states = self.module.load_states(plugin.path)["bots"].get("fire", {}) or {}
+        self.assertNotIn("999999999", states)
+
 if __name__ == "__main__":
     unittest.main()
