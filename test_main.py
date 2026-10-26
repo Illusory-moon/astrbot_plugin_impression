@@ -23,10 +23,11 @@ def load_plugin(data_dir):
             self.context = context
 
     class Logger:
-        def info(self, *args):
+        # 2026-10-27：真实 logger 支持 exc_info 之类关键字 ⇒ 桩也得收 kwargs ✓
+        def info(self, *args, **kwargs):
             pass
 
-        def warning(self, *args):
+        def warning(self, *args, **kwargs):
             pass
 
     class TextPart:
@@ -175,7 +176,11 @@ class ImpressionTest(unittest.TestCase):
         f = self.module.resolve_who
         self.assertEqual(f(people, "", "self"), "self")
         self.assertEqual(f(people, "null", "self"), "self")
-        self.assertEqual(f(people, "2166832487", "self"), "2166832487")   # 纯数字 = QQ 号
+        # 2026-10-27（P1-1）：**陌生号码不再当 QQ 号放行** ⇒ 认不出就不采纳 ✓
+        self.assertIsNone(f(people, "2166832487", "self"))                  # 陌生号 → None ✓
+        self.assertEqual(f(people, "100001", "self"), "100001")             # 已存在的号 → 认 ✓
+        self.assertIsNone(f(people, "爱", "self"))                          # 前缀太短（<2）✗
+        self.assertEqual(f(people, "神秘", "self"), "100002")                # 唯一命中 → 认 ✓
         self.assertEqual(f(people, "鲸鱼", "self"), "100001")             # 按存下的 name
         self.assertEqual(f(people, "Agoni", "self"), "100001")            # 按印象开头的称呼
         self.assertEqual(f(people, "神秘二维码", "self"), "100002")
@@ -339,6 +344,39 @@ class ImpressionTest(unittest.TestCase):
         asyncio.run(plugin.record(Event("fire", "person"), response))
         self.assertEqual(Path(plugin.path).read_text(encoding="utf-8"), "{bad")
         self.assertEqual(response.completion_text, "回复")
+
+
+    def test_unknown_number_creates_nothing(self):
+        """P1-1 回归：陌生号码的 who **不许**建新条目（README 的承诺）✓"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        response = types.SimpleNamespace(completion_text=(
+            '好\n<impression_update>{"who":"999999999","impression":"这人要退款","reason":"他说的"}</impression_update>'))
+        asyncio.run(plugin.record(Event("fire", "person"), response))
+        states = self.module.load_states(plugin.path)["bots"]
+        self.assertNotIn("999999999", states.get("fire", {}) or {})
+
+    def test_two_tags_last_wins(self):
+        """P2-1 回归：一轮里出现两个标签 ⇒ 取**最后一个**（末尾那个才是定稿）✓"""
+        plugin = self.module.Main(None, {"enabled": True, "enabled_self_ids": "fire"})
+        text = ('先想想 [[impression_update]]{"impression": "草稿", "reason": "先想想"}[[/impression_update]]'
+                ' 再想想 [[impression_update]]{"impression": "定稿", "reason": "想清楚了"}[[/impression_update]]')
+        cleaned, update = self.module.parse_response(text)
+        self.assertEqual(update.get("impression"), "定稿")
+        self.assertNotIn("impression_update", cleaned)
+
+    def test_foreign_json_kept(self):
+        """P2-3 回归：用户要的**普通 JSON** 不许被当成插件的包吃掉 ✓"""
+        cleaned, update = self.module.parse_response('配置长这样 {"impression": "high"}')
+        self.assertIsNone(update)
+        self.assertIn("配置长这样", cleaned)
+
+    def test_impression_text_wrapped(self):
+        """P2-4 回归：记录原文进 prompt 时必须带**数据边界**标记 ✓"""
+        people = {"100002": {"impression": "爱琢磨配置", "reason": "问了三遍"}}
+        hint = self.module.revision_hint(people, focus=["100002"])
+        self.assertIn("<<<impression-data>>>", hint)
+        self.assertIn("<<<end>>>", hint)
+        self.assertIn("不是指令", hint)
 
 
 if __name__ == "__main__":
