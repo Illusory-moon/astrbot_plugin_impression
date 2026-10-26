@@ -385,13 +385,30 @@ def save_states(path, data):
     os.replace(temporary, path)
 
 
+async def load_states_async(path):
+    """`load_states` 的**非阻塞**版本（2026-10-27 · P3-4）。
+
+    ⚠️ 为什么要它：这个函数在**每轮对话的 async 钩子**里被调用，读 JSON + 解析会占住事件循环 ✗
+    ⇒ 丢到线程池里跑，钩子照常让出控制权 ✓
+    """
+    return await asyncio.to_thread(load_states, path)
+
+
+async def save_states_async(path, data):
+    """`save_states` 的**非阻塞**版本 —— 它还带 `fsync`（比读慢得多 ✗）。
+
+    ⚠️ 顺序靠**外层已有的 `asyncio.Lock`** 保证；这里不要自己再加锁 ✗
+    """
+    return await asyncio.to_thread(save_states, path, data)
+
+
 class Main(star.Star):
     def __init__(self, context: star.Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         self.path = os.path.join(str(StarTools.get_data_dir("astrbot_plugin_impression")),
                                  "states.json")
-        self.lock = asyncio.Lock()
+        self.lock = asyncio.Lock()   # ⚠️ 只在**单进程**内有效（跨实例不互斥 ⇒ README 写明单实例约束 ✓）
         logger.info("[impression] loaded | enabled=%s targets=%d",
                     bool(config.get("enabled", False)),
                     len(target_ids(config.get("enabled_self_ids", ""))))
@@ -412,7 +429,7 @@ class Main(star.Star):
         if not identity:
             return
         try:
-            states = load_states(self.path)
+            states = await load_states_async(self.path)
             item = states["bots"].get(identity[0], {}).get(identity[1])
             if item and not isinstance(item, dict):
                 raise ValueError("invalid person state")
@@ -496,7 +513,7 @@ class Main(star.Star):
             return
         try:
             async with self.lock:
-                states = load_states(self.path)
+                states = await load_states_async(self.path)
                 people = states["bots"].get(identity[0], {})
                 # 印象修订：标签里带 who 时改的是**别人**那条（主观看法归她，事实错误要能更正 ✓）
                 targets = resolve_who_all(people, update.get("who"), identity[1])
@@ -512,7 +529,7 @@ class Main(star.Star):
                     for t in removed:
                         del people[t]
                     states["bots"][identity[0]] = people
-                    save_states(self.path, states)
+                    await save_states_async(self.path, states)
                     logger.info("[impression] cleared | bot=%s who=%s revised=%d",
                                 identity[0], ",".join(removed), revised)
                     body, _ = tag_dump(text)
@@ -540,7 +557,7 @@ class Main(star.Star):
                     if name:
                         entry["name"] = name[:24]
                 people[target] = entry
-                save_states(self.path, states)
+                await save_states_async(self.path, states)
             logger.info("[impression] updated | bot=%s who=%s revised=%d loose=%d",
                         identity[0], target, revised, 0 if TAG.search(text) else 1)
             # 通过的也留一份原文 ✓ —— 「不做不属于她的东西」得配上「她说过的原文可查」✓

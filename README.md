@@ -14,4 +14,11 @@
 
 可与 [bot-mindscape](https://github.com/Illusory-moon/bot-mindscape) 并用，两者没有代码或数据依赖。需要在同一容器服务多个 bot 时，先开启 `enabled`，再只把目标 bot 的 `self_id` 填入 `enabled_self_ids`；空白名单不处理任何 bot。
 
+> ⚠️ **单实例约束**（2026-10-27 写明）：`states.json` 的写保护只有**进程内**的 `asyncio.Lock` ✓
+> 同一个数据目录**不要**同时跑两个 AstrBot 实例（含两个容器共用挂载卷那类）—— 后写的会覆盖先写的，
+> 表现为「刚改的印象一会儿又变回去了」✗ 想横向扩，就要自己换成外部存储或加文件锁 ✓
+>
+> 每次读写在 async 钩子里都走**线程池**（`asyncio.to_thread`）⇒ 不会卡住事件循环 ✓
+> （写还带 `fsync`，比读慢得多，所以更不能直接跑在钩子里 ✗）
+
 状态用 `{"version": 1, "bots": {bot_id: {user_id: {impression, reason, updated_at}}}}` 组织。手动修改前请先备份 `states.json`；格式错误时插件会保留原文件并记录警告。
