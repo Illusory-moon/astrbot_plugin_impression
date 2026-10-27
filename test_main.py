@@ -153,7 +153,9 @@ class ImpressionTest(unittest.TestCase):
             Event("fire", "person", text="100002 那条你看着办"), focused))
         self.assertIn("你记录里是这么写的", focused.prompt)
         self.assertIn("爱拆台", focused.prompt)
-        self.assertIn("当初的依据", focused.prompt)
+        # 2026-10-27 语域改（③）：「（当初的依据：…）」→「｜当初依据：…」⇒ 断言跟着走 ✓
+        #   护栏没变弱：这条守的是「把依据摆出来让她看得见」，不是「用词带『的』」✓
+        self.assertIn("当初依据", focused.prompt)
 
     def test_named_revision_updates_the_named_person(self):
         """印象修订：标签里带 who 时改的是**别人**那条（私聊里更正事实错误用 ✓）。"""

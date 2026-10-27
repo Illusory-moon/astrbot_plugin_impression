@@ -123,7 +123,9 @@ def revision_hint(people, max_people=8, focus=None):
                  "\n<<<impression-data>>>"]
         for key in focus[:max_people]:
             val = people.get(key) or {}
-            lines.append("- %s：%s（当初的依据：%s）" % (
+            # 2026-10-27 语域改（主人裁定 ③）：原 `（当初的依据：…）` 是「括号补解释」⇒ 换成竖线分隔 ✓
+            #   一个信息都没删（号 / 印象 / 当初依据 三类全在）；原因见 canon/_36 与 10-27 那轮诊断 ✓
+            lines.append("- %s：%s｜当初依据：%s" % (
                 key, val.get("impression", ""), val.get("reason", "")))
         lines.append("<<<end>>>")
         lines.append("要改就带上 who（写 %s 这样的号，或者你记录里的称呼）—— "
